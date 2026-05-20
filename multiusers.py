@@ -175,27 +175,39 @@ def _verify_password(password: str, password_hash: str) -> bool:
     return False
 
 
-def register_user(sb: Client, login_id: str, password: str) -> tuple[bool, str]:
+def register_user(
+  sb: Client, login_id: str, password: str
+) -> tuple[bool, str, str | None]:
   login_id = login_id.strip()
   if not login_id or not password:
-    return False, "아이디와 비밀번호를 입력해 주세요."
+    return False, "아이디와 비밀번호를 입력해 주세요.", None
   if len(password) < 4:
-    return False, "비밀번호는 4자 이상이어야 합니다."
+    return False, "비밀번호는 4자 이상이어야 합니다.", None
   try:
     existing = (
       sb.table(USER_TABLE).select("id").eq("login_id", login_id).limit(1).execute()
     )
     if existing.data:
-      return False, "이미 사용 중인 아이디입니다."
-    row = sb.table(USER_TABLE).insert(
-      {"login_id": login_id, "password_hash": _hash_password(password)}
-    ).execute()
+      return False, "이미 사용 중인 아이디입니다.", None
+    row = (
+      sb.table(USER_TABLE)
+      .insert({"login_id": login_id, "password_hash": _hash_password(password)})
+      .select("id")
+      .execute()
+    )
     if not row.data:
-      return False, "회원가입에 실패했습니다."
-    return True, "회원가입이 완료되었습니다. 로그인해 주세요."
+      return False, "회원가입에 실패했습니다.", None
+    return True, "회원가입이 완료되었습니다.", row.data[0]["id"]
   except Exception as exc:  # noqa: BLE001
     logger.warning("Register failed: %s", exc)
-    return False, f"회원가입 중 오류가 발생했습니다: {exc}"
+    return False, f"회원가입 중 오류가 발생했습니다: {exc}", None
+
+
+def _apply_login(sb: Client, user_id: str, login_id: str) -> None:
+  st.session_state.user_id = user_id
+  st.session_state.login_id = login_id
+  reset_ui_session(new_id=True)
+  st.session_state.session_options = fetch_session_list(sb, user_id)
 
 
 def login_user(sb: Client, login_id: str, password: str) -> tuple[bool, str, str | None]:
@@ -761,10 +773,7 @@ def _render_auth_panel(sb: Client) -> bool:
     if st.button("로그인", key="btn_login"):
       ok, msg, uid = login_user(sb, login_id, password)
       if ok and uid:
-        st.session_state.user_id = uid
-        st.session_state.login_id = login_id.strip()
-        reset_ui_session(new_id=True)
-        st.session_state.session_options = fetch_session_list(sb, uid)
+        _apply_login(sb, uid, login_id.strip())
         st.success(msg)
         st.rerun()
       else:
@@ -775,11 +784,21 @@ def _render_auth_panel(sb: Client) -> bool:
     new_pw = st.text_input("새 비밀번호", type="password", key="auth_signup_pw")
     new_pw2 = st.text_input("비밀번호 확인", type="password", key="auth_signup_pw2")
     if st.button("회원가입", key="btn_signup"):
+      cleaned_id = new_id.strip()
       if new_pw != new_pw2:
         st.error("비밀번호 확인이 일치하지 않습니다.")
       else:
-        ok, msg = register_user(sb, new_id, new_pw)
-        st.success(msg) if ok else st.error(msg)
+        ok, msg, uid = register_user(sb, cleaned_id, new_pw)
+        if ok and uid:
+          _apply_login(sb, uid, cleaned_id)
+          st.success(f"회원가입이 완료되었습니다! {cleaned_id}님 환영합니다.")
+          st.rerun()
+        elif ok:
+          st.warning(
+            "회원가입은 완료되었으나 계정을 불러오지 못했습니다. 로그인 탭을 이용해 주세요."
+          )
+        else:
+          st.error(msg)
 
   return False
 
