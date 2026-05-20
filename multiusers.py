@@ -61,24 +61,44 @@ _sync_config_to_env()
 
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging (Streamlit Cloud는 앱 디렉터리 쓰기 불가 → 임시 폴더 또는 콘솔만)
 # ---------------------------------------------------------------------------
-def _setup_logging() -> logging.Logger:
-  LOG_DIR.mkdir(parents=True, exist_ok=True)
-  log_path = LOG_DIR / f"multiusers_{datetime.now().strftime('%Y%m%d')}.log"
+def _writable_log_dir() -> Path | None:
+  candidates = [
+    Path(__file__).resolve().parent / "logs",
+    LOG_DIR,
+    Path(tempfile.gettempdir()) / "multiusers_logs",
+  ]
+  for directory in candidates:
+    try:
+      directory.mkdir(parents=True, exist_ok=True)
+      probe = directory / ".write_probe"
+      probe.write_text("", encoding="utf-8")
+      probe.unlink(missing_ok=True)
+      return directory
+    except (OSError, PermissionError):
+      continue
+  return None
 
+
+def _setup_logging() -> logging.Logger:
   root = logging.getLogger()
   root.handlers.clear()
   root.setLevel(logging.WARNING)
 
   fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-  fh = logging.FileHandler(log_path, encoding="utf-8")
-  fh.setLevel(logging.WARNING)
-  fh.setFormatter(fmt)
+
+  log_dir = _writable_log_dir()
+  if log_dir is not None:
+    log_path = log_dir / f"multiusers_{datetime.now().strftime('%Y%m%d')}.log"
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.WARNING)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
   ch = logging.StreamHandler()
   ch.setLevel(logging.WARNING)
   ch.setFormatter(fmt)
-  root.addHandler(fh)
   root.addHandler(ch)
 
   for name in ("httpx", "httpcore", "urllib3", "openai", "langchain", "langchain_openai"):
